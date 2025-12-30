@@ -1,0 +1,25 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Groupe E Tariffs",
+        "description": "Configure the daily refresh time.",
+        "data": {
+          "refresh_time": "Daily refresh time"
+        }
+      }
+    },
+    "error": {},
+    "abort": {}
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "refresh_time": "Daily refresh time"
+        }
+      }
+    }
+  }
+}
