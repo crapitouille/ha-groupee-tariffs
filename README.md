@@ -16,8 +16,18 @@ This software is provided without any warranty, and is not developed by [Groupe 
 
 ## Features
 
-[![Product Name Screen Shot][product-screenshot]](https://example.com)
+You can easly add the two sensors to your dashboard
+[![Report Screen Shot][report-screenshot]]
+
+The dynamic tariff looks like this image
+[![dynamic Screen Shot][dynamic-screenshot]]
+
+The static tariff looks like this image
+[![static Screen Shot][static-screenshot]]
+
 
 [//]: # (These are reference links used in the body of this note and get stripped out when the markdown processor does its job. There is no need to format nicely because it shouldn't be seen. Thanks SO - http://stackoverflow.com/questions/4823468/store-comments-in-markdown-syntax)
    [Groupe E]: <https://www.groupe-e.ch/fr/electricite/vario>
-[product-screenshot]: pictures/report.png
+[report-screenshot]: pictures/report.png
+[static-screenshot]: pictures/static.png
+[dynamic-screenshot]: pictures/dynamic.png
