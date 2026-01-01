@@ -1,7 +1,7 @@
 # Home Assistant - static/dynamic tariffs Groupe E
-> If you are a Groupe E customer and you want to get the static and dynamic tariffs in live for your Home Assistant, your are free to use that.
+> If you are a Groupe E customer and you want to use the static and dynamic tariffs in live for your Home Assistant, your are free to use that.
 
-This software is provided without any warranty, and it is not develloped by [Groupe E]
+This software is provided without any warranty, and is not developed by [Groupe E]
 
 
 
