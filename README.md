@@ -15,14 +15,17 @@ This software is provided without any warranty, and is not developed by [Groupe 
 [![Add integration to my Home Assistant](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=groupee_vario)
 
 ## Features
+- All sensor can be used in your automation tasks.
+- by default, the tariff is updated once a day at 18h00
+- This module update the sensors every minute
 
-You can easly add the two sensors to your dashboard
+### You can easly add the two sensors to your dashboard
 [![Report Screen Shot][report-screenshot]]
 
-The dynamic tariff looks like this image
+### The dynamic tariff looks like this image
 [![dynamic Screen Shot][dynamic-screenshot]]
 
-The static tariff looks like this image
+### The static tariff looks like this image
 [![static Screen Shot][static-screenshot]]
 
 
