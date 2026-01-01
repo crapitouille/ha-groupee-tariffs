@@ -33,7 +33,12 @@ def _parse_iso(dt_str: str) -> datetime:
 
 def _local_midnight_range(now_local: datetime) -> tuple[datetime, datetime]:
     start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_local = (start_local + timedelta(days=2)) - timedelta(seconds=1)
+    # IMPORTANT: use an *exclusive* end (exactly +2 days) so we don't
+    # accidentally drop the last 15-minute slice of the second day.
+    # The API slices end exactly at HH:00/15/30/45, so using 23:59:59 can
+    # exclude the final slice (23:45-00:00) and cause "stale"/missing data
+    # around midnight.
+    end_local = start_local + timedelta(days=2)
     return start_local, end_local
 
 def _parse_refresh_time(value: str) -> dtime:
