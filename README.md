@@ -15,18 +15,18 @@ This software is provided without any warranty, and is not developed by [Groupe 
 [![Add integration to my Home Assistant](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=groupee_vario)
 
 ## Features
-- All sensor can be used in your automation tasks.
+- All sensors can be used in your automation tasks.
 - by default, the tariff is updated once a day at 18h00
 - This module update the sensors every minute
 
 ### You can easly add the two sensors to your dashboard
-[![Report Screen Shot][report-screenshot]]
+![Report Screen Shot][report-screenshot]
 
 ### The dynamic tariff looks like this image
-[![dynamic Screen Shot][dynamic-screenshot]]
+![dynamic Screen Shot][dynamic-screenshot]
 
 ### The static tariff looks like this image
-[![static Screen Shot][static-screenshot]]
+![static Screen Shot][static-screenshot]
 
 
 [//]: # (These are reference links used in the body of this note and get stripped out when the markdown processor does its job. There is no need to format nicely because it shouldn't be seen. Thanks SO - http://stackoverflow.com/questions/4823468/store-comments-in-markdown-syntax)
