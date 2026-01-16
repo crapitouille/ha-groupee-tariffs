@@ -1,44 +1,64 @@
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers.entity import DeviceInfo
 
-from .const import ATTR_END, ATTR_START, ATTR_UNIT, DOMAIN
+from .const import DOMAIN, NAME
 from .coordinator import GroupeEVarioCoordinator
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     coordinator: GroupeEVarioCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([GroupeEVarioCurrentVarioSensor(coordinator, entry)], True)
+    async_add_entities([GroupeEVarioCurrentSensor(coordinator, entry)])
 
-class GroupeEVarioCurrentVarioSensor(CoordinatorEntity[GroupeEVarioCoordinator], SensorEntity):
-    _attr_name = "Groupe E Vario current"
-    _attr_icon = "mdi:cash"
-    _attr_native_unit_of_measurement = "Rp./kWh"  # API returns unit in each slice; keep stable here
+class GroupeEVarioCurrentSensor(SensorEntity):
+    _attr_has_entity_name = True
+    _attr_name = "Vario current"
+    _attr_icon = "mdi:currency-usd"
+    _attr_device_class = SensorDeviceClass.MONETARY
 
     def __init__(self, coordinator: GroupeEVarioCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator)
+        self.coordinator = coordinator
+        self.entry = entry
         self._attr_unique_id = f"{entry.entry_id}_vario_current"
 
     @property
-    def native_value(self) -> float | None:
-        sl = self.coordinator.get_current_slice()
-        return sl.vario_plus if sl else None
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.entry.entry_id)},
+            name=NAME,
+            manufacturer="Groupe E",
+        )
 
     @property
-    def extra_state_attributes(self) -> dict:
-        sl = self.coordinator.get_current_slice()
-        if not sl:
+    def native_value(self):
+        slot = self.coordinator.current_slot()
+        if slot is None:
+            return None
+        return slot.vario_plus
+
+    @property
+    def native_unit_of_measurement(self):
+        slot = self.coordinator.current_slot()
+        if slot is None:
+            return None
+        # API returns "Rp./kWh"; we keep as-is.
+        return slot.unit or "Rp./kWh"
+
+    @property
+    def extra_state_attributes(self):
+        slot = self.coordinator.current_slot()
+        if slot is None:
             return {}
         return {
-            ATTR_START: dt_util.as_local(sl.start).isoformat(),
-            ATTR_END: dt_util.as_local(sl.end).isoformat(),
-            ATTR_UNIT: sl.unit,
+            "slot_start": slot.start.isoformat(),
+            "slot_end": slot.end.isoformat(),
+            "dt_plus": slot.dt_plus,
         }
+
+    async def async_added_to_hass(self) -> None:
+        self.coordinator.async_add_listener(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self.coordinator.async_remove_listener(self.async_write_ha_state)

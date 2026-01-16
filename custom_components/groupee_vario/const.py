@@ -1,14 +1,10 @@
+from __future__ import annotations
+
 DOMAIN = "groupee_vario"
+NAME = "Groupe E Tariffs"
 
-SERVICE_REFRESH_NOW = "refresh_now"
-ATTR_ENTRY_ID = "entry_id"
-
-CONF_REFRESH_TIME = "refresh_time"
-
-DEFAULT_REFRESH_TIME = "18:00:00"  # local time (Europe/Zurich)
-
-ATTR_START = "start"
-ATTR_END = "end"
-ATTR_UNIT = "unit"
+CONF_REFRESH_TIME = "refresh_time"  # "HH:MM"
+DEFAULT_REFRESH_TIME = "18:00"
 
 API_URL = "https://api.tariffs.groupe-e.ch/v1/tariffs"
+USER_AGENT = "homeassistant-groupee-vario/0.3.0"

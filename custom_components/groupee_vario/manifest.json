@@ -1,12 +1,13 @@
 {
   "domain": "groupee_vario",
-  "name": "Groupe E Tariffs (Vario/DT)",
-  "version": "0.2.7",
-  "config_flow": true,
+  "name": "Groupe E Tariffs",
+  "version": "0.3.0",
   "documentation": "https://github.com/crapitouille/ha-groupee-tariffs",
   "issue_tracker": "https://github.com/crapitouille/ha-groupee-tariffs/issues",
-  "requirements": [],
-  "codeowners": [],
+  "codeowners": [
+    "@crapitouille"
+  ],
+  "config_flow": true,
   "iot_class": "cloud_polling",
-  "integration_type": "service"
+  "requirements": []
 }
