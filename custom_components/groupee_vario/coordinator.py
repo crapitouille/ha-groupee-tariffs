@@ -13,7 +13,15 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import API_URL, CONF_REFRESH_TIME, DEFAULT_REFRESH_TIME, DOMAIN, USER_AGENT
+from .const import (
+    API_URL,
+    CONF_REFRESH_TIME,
+    DEFAULT_REFRESH_TIME,
+    CONF_CHEAP_WINDOW_HOURS,
+    DEFAULT_CHEAP_WINDOW_HOURS,
+    DOMAIN,
+    USER_AGENT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -228,3 +236,73 @@ class GroupeEVarioCoordinator(DataUpdateCoordinator[list[TariffSlot]]):
             return None
         low = min(vals)
         return slot.dt_plus == low
+
+    def cheap_window_hours(self) -> int:
+        """Configured cheapest-window duration in hours (1..4)."""
+        raw = self.entry.options.get(CONF_CHEAP_WINDOW_HOURS, DEFAULT_CHEAP_WINDOW_HOURS)
+        try:
+            val = int(raw)
+        except Exception:
+            val = int(DEFAULT_CHEAP_WINDOW_HOURS)
+        return max(1, min(4, val))
+
+    def day_slots(self, day: date) -> list[TariffSlot]:
+        if not self._last_valid_data:
+            return []
+        return [s for s in self._last_valid_data if s.start.date() == day]
+
+    def dt_offpeak_blocks(self, day: date) -> list[tuple[datetime, datetime]]:
+        """Return merged off-peak blocks for the given civil day."""
+        slots = self.day_slots(day)
+        if not slots:
+            return []
+        low = min(s.dt_plus for s in slots)
+        off = [s for s in slots if s.dt_plus == low]
+        if not off:
+            return []
+        off.sort(key=lambda s: s.start)
+        blocks: list[tuple[datetime, datetime]] = []
+        cur_start = off[0].start
+        cur_end = off[0].end
+        for s in off[1:]:
+            if s.start == cur_end:
+                cur_end = s.end
+            else:
+                blocks.append((cur_start, cur_end))
+                cur_start, cur_end = s.start, s.end
+        blocks.append((cur_start, cur_end))
+        return blocks
+
+    def cheapest_vario_window(self, day: date, hours: int | None = None) -> tuple[datetime, datetime] | None:
+        """Return (start,end) of the cheapest contiguous Vario window for a day."""
+        if hours is None:
+            hours = self.cheap_window_hours()
+        hours = max(1, min(24, int(hours)))
+        needed = hours * 4  # 15-min slots
+
+        slots = self.day_slots(day)
+        if len(slots) < needed:
+            return None
+        slots.sort(key=lambda s: s.start)
+
+        best_sum: float | None = None
+        best_start: datetime | None = None
+        # Sliding window with contiguity check
+        for i in range(0, len(slots) - needed + 1):
+            window = slots[i : i + needed]
+            ok = True
+            for a, b in zip(window, window[1:]):
+                if b.start != a.end:
+                    ok = False
+                    break
+            if not ok:
+                continue
+            ssum = sum(x.vario_plus for x in window)
+            if best_sum is None or ssum < best_sum:
+                best_sum = ssum
+                best_start = window[0].start
+        if best_start is None:
+            return None
+        return (best_start, best_start + timedelta(minutes=15 * needed))
+
+    # (end)

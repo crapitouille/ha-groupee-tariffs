@@ -10,7 +10,7 @@ from .coordinator import GroupeEVarioCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["sensor", "binary_sensor"]
+PLATFORMS: list[str] = ["sensor", "binary_sensor", "calendar"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = GroupeEVarioCoordinator(hass, entry)

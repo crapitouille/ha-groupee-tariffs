@@ -5,7 +5,11 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    CONF_CHEAP_WINDOW_HOURS,
+    DEFAULT_CHEAP_WINDOW_HOURS,
+)
 
 class GroupeEVarioConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -36,7 +40,9 @@ class GroupeEVarioOptionsFlowHandler(config_entries.OptionsFlow):
 
         # We keep refresh_time as a simple string "HH:MM" to avoid serializer issues.
         current = self._config_entry.options.get("refresh_time", "18:00")
+        current_hours = str(self._config_entry.options.get(CONF_CHEAP_WINDOW_HOURS, DEFAULT_CHEAP_WINDOW_HOURS))
         schema = vol.Schema({
             vol.Optional("refresh_time", default=current): str,
+            vol.Optional(CONF_CHEAP_WINDOW_HOURS, default=current_hours): vol.In(["1", "2", "3", "4"]),
         })
         return self.async_show_form(step_id="init", data_schema=schema)
