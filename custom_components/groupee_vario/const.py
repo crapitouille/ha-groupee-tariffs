@@ -10,5 +10,9 @@ DEFAULT_REFRESH_TIME = "18:00"
 CONF_CHEAP_WINDOW_HOURS = "cheap_window_hours"  # 1..4 (hours)
 DEFAULT_CHEAP_WINDOW_HOURS = 1
 
+# Number of non-overlapping cheapest windows per day.
+CONF_CHEAP_WINDOW_COUNT = "cheap_window_count"  # 1..4
+DEFAULT_CHEAP_WINDOW_COUNT = 1
+
 API_URL = "https://api.tariffs.groupe-e.ch/v1/tariffs"
-USER_AGENT = "homeassistant-groupee-vario/0.3.1"
+USER_AGENT = "homeassistant-groupee-vario/0.3.8"

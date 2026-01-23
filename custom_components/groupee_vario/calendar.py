@@ -121,24 +121,26 @@ class GroupeEVarioCheapestWindowCalendar(_BaseGroupeECalendar):
         events: List[CalendarEvent] = []
 
         hours = self.coordinator.cheap_window_hours()
+        count = self.coordinator.cheap_window_count()
         start_day = start_date.astimezone(self.coordinator._tz).date()
         end_day = end_date.astimezone(self.coordinator._tz).date()
 
         day = start_day
         while day <= end_day:
-            best = self.coordinator.cheapest_vario_window(day, hours=hours)
-            if best is not None:
-                block_start, block_end = best
-                if not (block_end <= start_date or block_start >= end_date):
-                    events.append(
-                        CalendarEvent(
-                            summary=f"Cheapest Vario ({hours}h)",
-                            start=block_start,
-                            end=block_end,
-                            description=None,
-                            location=None,
-                        )
+            windows = self.coordinator.cheapest_vario_windows(day, hours=hours, count=count)
+            for idx, (block_start, block_end) in enumerate(windows, start=1):
+                if block_end <= start_date or block_start >= end_date:
+                    continue
+                suffix = f" #{idx}" if count > 1 else ""
+                events.append(
+                    CalendarEvent(
+                        summary=f"Cheapest Vario ({hours}h){suffix}",
+                        start=block_start,
+                        end=block_end,
+                        description=None,
+                        location=None,
                     )
+                )
             day = day + timedelta(days=1)
 
         self._set_current_or_next_event(events)

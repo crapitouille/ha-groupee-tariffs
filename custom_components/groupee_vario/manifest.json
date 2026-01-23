@@ -1,7 +1,7 @@
 {
   "domain": "groupee_vario",
   "name": "Groupe E Tariffs",
-  "version": "0.3.1",
+  "version": "0.3.8",
   "documentation": "https://github.com/crapitouille/ha-groupee-tariffs",
   "issue_tracker": "https://github.com/crapitouille/ha-groupee-tariffs/issues",
   "codeowners": [

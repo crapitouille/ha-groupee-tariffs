@@ -10,18 +10,19 @@ from .coordinator import GroupeEVarioCoordinator
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     coordinator: GroupeEVarioCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([GroupeEVarioCurrentSensor(coordinator, entry)])
+    async_add_entities(
+        [
+            GroupeEVarioCurrentSensor(coordinator, entry),
+            GroupeEDTNextOffPeakStartSensor(coordinator, entry),
+        ]
+    )
 
-class GroupeEVarioCurrentSensor(SensorEntity):
+class _BaseGroupeESensor(SensorEntity):
     _attr_has_entity_name = True
-    _attr_name = "Vario current"
-    _attr_icon = "mdi:currency-usd"
-    _attr_device_class = SensorDeviceClass.MONETARY
 
     def __init__(self, coordinator: GroupeEVarioCoordinator, entry: ConfigEntry) -> None:
         self.coordinator = coordinator
         self.entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_vario_current"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -30,6 +31,21 @@ class GroupeEVarioCurrentSensor(SensorEntity):
             name=NAME,
             manufacturer="Groupe E",
         )
+
+    async def async_added_to_hass(self) -> None:
+        self.coordinator.async_add_listener(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self.coordinator.async_remove_listener(self.async_write_ha_state)
+
+class GroupeEVarioCurrentSensor(_BaseGroupeESensor):
+    _attr_name = "Vario current"
+    _attr_icon = "mdi:currency-usd"
+    _attr_device_class = SensorDeviceClass.MONETARY
+
+    def __init__(self, coordinator: GroupeEVarioCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_vario_current"
 
     @property
     def native_value(self):
@@ -57,8 +73,16 @@ class GroupeEVarioCurrentSensor(SensorEntity):
             "dt_plus": slot.dt_plus,
         }
 
-    async def async_added_to_hass(self) -> None:
-        self.coordinator.async_add_listener(self.async_write_ha_state)
+class GroupeEDTNextOffPeakStartSensor(_BaseGroupeESensor):
+    _attr_name = "DT next off-peak start"
+    _attr_icon = "mdi:eye"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
 
-    async def async_will_remove_from_hass(self) -> None:
-        self.coordinator.async_remove_listener(self.async_write_ha_state)
+    def __init__(self, coordinator: GroupeEVarioCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_dt_next_off_peak_start"
+
+    @property
+    def native_value(self):
+        # Return timezone-aware datetime or None
+        return self.coordinator.next_offpeak_start()

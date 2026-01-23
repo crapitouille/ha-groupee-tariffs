@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, time
 from typing import Any, Optional
@@ -19,6 +20,8 @@ from .const import (
     DEFAULT_REFRESH_TIME,
     CONF_CHEAP_WINDOW_HOURS,
     DEFAULT_CHEAP_WINDOW_HOURS,
+    CONF_CHEAP_WINDOW_COUNT,
+    DEFAULT_CHEAP_WINDOW_COUNT,
     DOMAIN,
     USER_AGENT,
 )
@@ -200,8 +203,17 @@ class GroupeEVarioCoordinator(DataUpdateCoordinator[list[TariffSlot]]):
             try:
                 start = datetime.fromisoformat(item["start_timestamp"]).astimezone(self._tz)
                 end = datetime.fromisoformat(item["end_timestamp"]).astimezone(self._tz)
-                vario_plus = float(item.get("vario_plus"))
-                dt_plus = float(item.get("dt_plus"))
+                vario_plus_raw = item.get("vario_plus")
+                dt_plus_raw = item.get("dt_plus")
+                vario_plus = float(vario_plus_raw)
+                dt_plus = float(dt_plus_raw)
+                # Guard against NaN/Inf in API payload (would break cheapest-window selection)
+                if not math.isfinite(vario_plus):
+                    _LOGGER.warning("Non-finite vario_plus=%s at %s; using large sentinel", vario_plus_raw, item.get("start_timestamp"))
+                    vario_plus = 1e9
+                if not math.isfinite(dt_plus):
+                    _LOGGER.warning("Non-finite dt_plus=%s at %s; using large sentinel", dt_plus_raw, item.get("start_timestamp"))
+                    dt_plus = 1e9
                 unit = item.get("unit")
                 slots.append(TariffSlot(start=start, end=end, vario_plus=vario_plus, dt_plus=dt_plus, unit=unit))
             except Exception:
@@ -245,6 +257,16 @@ class GroupeEVarioCoordinator(DataUpdateCoordinator[list[TariffSlot]]):
         except Exception:
             val = int(DEFAULT_CHEAP_WINDOW_HOURS)
         return max(1, min(4, val))
+
+    def cheap_window_count(self) -> int:
+        """Configured number of non-overlapping cheapest windows per day (1..4)."""
+        raw = self.entry.options.get(CONF_CHEAP_WINDOW_COUNT, DEFAULT_CHEAP_WINDOW_COUNT)
+        try:
+            val = int(raw)
+        except Exception:
+            val = int(DEFAULT_CHEAP_WINDOW_COUNT)
+        return max(1, min(4, val))
+
 
     def day_slots(self, day: date) -> list[TariffSlot]:
         if not self._last_valid_data:
@@ -304,5 +326,105 @@ class GroupeEVarioCoordinator(DataUpdateCoordinator[list[TariffSlot]]):
         if best_start is None:
             return None
         return (best_start, best_start + timedelta(minutes=15 * needed))
+
+    def cheapest_vario_windows(
+        self, day: date, hours: int | None = None, count: int | None = None
+    ) -> list[tuple[datetime, datetime]]:
+        """Return up to N non-overlapping cheapest contiguous Vario windows for a day.
+
+        - Windows are aligned to 15-minute slots and must be fully contiguous.
+        - Windows do not overlap.
+        - Selection minimizes total cost (sum of vario_plus across selected windows).
+        - Deterministic tie-break: earlier windows are preferred when costs are equal.
+        """
+        if hours is None:
+            hours = self.cheap_window_hours()
+        if count is None:
+            count = self.cheap_window_count()
+
+        hours = max(1, min(24, int(hours)))
+        count = max(1, min(4, int(count)))
+
+        needed = hours * 4  # 15-min slots
+        slots = self.day_slots(day)
+        if len(slots) < needed:
+            return []
+        slots.sort(key=lambda s: s.start)
+
+        # Build contiguous window candidates (start, end, cost)
+        candidates: list[tuple[datetime, datetime, float]] = []
+        for i in range(0, len(slots) - needed + 1):
+            window = slots[i : i + needed]
+            # Ensure strict contiguity
+            ok = True
+            for a, b in zip(window, window[1:]):
+                if b.start != a.end:
+                    ok = False
+                    break
+            if not ok:
+                continue
+            start_dt = window[0].start
+            end_dt = window[-1].end
+            cost = sum(x.vario_plus for x in window)
+            candidates.append((start_dt, end_dt, cost))
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda t: (t[0], t[1]))
+        starts = [c[0] for c in candidates]
+        ends = [c[1] for c in candidates]
+        costs = [c[2] for c in candidates]
+
+        from bisect import bisect_left
+        from functools import lru_cache
+
+        # next index for non-overlap: first candidate with start >= current end
+        next_idx: list[int] = [bisect_left(starts, e) for e in ends]
+
+        @lru_cache(maxsize=None)
+        def solve(i: int, k: int) -> tuple[float, tuple[int, ...]]:
+            # We want to pick exactly k windows when possible.
+            # If we run out of candidates while still needing picks, return +inf.
+            if k == 0:
+                return (0.0, ())
+            if i >= len(candidates):
+                return (float('inf'), ())
+            # Option 1: skip i
+            best_cost, best_pick = solve(i + 1, k)
+
+            # Option 2: take i
+            take_cost_next, take_pick_next = solve(next_idx[i], k - 1)
+            take_cost = costs[i] + take_cost_next
+            take_pick = (i,) + take_pick_next
+
+            # Choose better: lower cost, then lexicographically smaller indices (earlier)
+            if (take_cost, take_pick) < (best_cost, best_pick):
+                return (take_cost, take_pick)
+            return (best_cost, best_pick)
+
+        _total_cost, picked = solve(0, count)
+        if not math.isfinite(_total_cost):
+            return []
+        windows = [(candidates[i][0], candidates[i][1]) for i in picked]
+        windows.sort(key=lambda w: w[0])
+        return windows
+
+    def next_offpeak_start(self, now: datetime | None = None) -> datetime | None:
+        """Return the next DT off-peak block start strictly after 'now' (local time)."""
+        if now is None:
+            now = datetime.now(tz=self._tz)
+        local_now = now.astimezone(self._tz)
+
+        if not self._last_valid_data:
+            return None
+
+        # Consider today + tomorrow only (that's what API provides)
+        days = sorted({s.start.date() for s in self._last_valid_data})
+        for d in days:
+            for start, end in self.dt_offpeak_blocks(d):
+                if start > local_now:
+                    return start
+        return None
 
     # (end)
