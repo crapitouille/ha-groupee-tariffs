@@ -3,6 +3,8 @@
 
 This software is provided without any warranty, and is not developed by [Groupe E]
 
+This new version is based on the Groupe E API v2
+
 
 
 
@@ -18,6 +20,7 @@ This software is provided without any warranty, and is not developed by [Groupe 
 - All sensors can be used in your automation tasks.
 - by default, the tariff is updated once a day at 18h00
 - This module update the sensors every minute
+- You can add two integration, one for VARIO, one for STATIC
 
 ### You can easly add the two sensors to your dashboard
 ![Report Screen Shot][report-screenshot]
