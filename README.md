@@ -26,7 +26,7 @@ This new version is based on the Groupe E API v2
 ![Report Screen Shot][report-screenshot]
 
 ### The dynamic tariff looks like this image
-you will need to install apexcharts-card [apexcharts-card] component to view the data on your dashboard
+you will need to install apexcharts-card [apexcharts-card] from HACS, to view the data on your dashboard
 ![dynamic Screen Shot][dynamic-screenshot]
 
 ### The static tariff looks like this image
