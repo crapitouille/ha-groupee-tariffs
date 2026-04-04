@@ -26,6 +26,7 @@ This new version is based on the Groupe E API v2
 ![Report Screen Shot][report-screenshot]
 
 ### The dynamic tariff looks like this image
+you will need to install apexcharts-card [apexcharts-card] component to view the data on your dashboard
 ![dynamic Screen Shot][dynamic-screenshot]
 
 ### The static tariff looks like this image
@@ -34,6 +35,7 @@ This new version is based on the Groupe E API v2
 
 [//]: # (These are reference links used in the body of this note and get stripped out when the markdown processor does its job. There is no need to format nicely because it shouldn't be seen. Thanks SO - http://stackoverflow.com/questions/4823468/store-comments-in-markdown-syntax)
    [Groupe E]: <https://www.groupe-e.ch/fr/electricite/vario>
+   [apexcharts-card]: <https://github.com/RomRider/apexcharts-card>
 [report-screenshot]: pictures/report.png
 [static-screenshot]: pictures/static.png
 [dynamic-screenshot]: pictures/dynamic.png
