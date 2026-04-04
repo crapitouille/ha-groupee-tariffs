@@ -1,55 +1,52 @@
+"""Binary sensor platform for Groupe E Tariffs – Tariff Period (DOUBLE only)."""
 from __future__ import annotations
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorEntity,
+    BinarySensorDeviceClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, NAME
-from .coordinator import GroupeEVarioCoordinator
+from .const import CONF_TARIFF_NAME, DOMAIN, TARIFF_DOUBLE
+from .coordinator import GroupeETariffCoordinator
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
-    coordinator: GroupeEVarioCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([GroupeEDTOffPeakBinarySensor(coordinator, entry)])
 
-class GroupeEDTOffPeakBinarySensor(BinarySensorEntity):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    if entry.data[CONF_TARIFF_NAME] != TARIFF_DOUBLE:
+        return
+
+    coordinator: GroupeETariffCoordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([GroupeEOffPeakSensor(coordinator, entry.data[CONF_TARIFF_NAME])])
+
+
+class GroupeEOffPeakSensor(CoordinatorEntity[GroupeETariffCoordinator], BinarySensorEntity):
+    """True when currently in off-peak (Heures Creuses) period."""
+
     _attr_has_entity_name = True
-    _attr_name = "DT off-peak"
-    _attr_icon = "mdi:clock-outline"
+    _attr_name = "OffPeak"
+    _attr_icon = "mdi:clock-time-four-outline"
+    _attr_device_class = BinarySensorDeviceClass.POWER
 
-    def __init__(self, coordinator: GroupeEVarioCoordinator, entry: ConfigEntry) -> None:
-        self.coordinator = coordinator
-        self.entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_dt_off_peak"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.entry.entry_id)},
-            name=NAME,
-            manufacturer="Groupe E",
-        )
-
-    @property
-    def is_on(self):
-        val = self.coordinator.dt_off_peak()
-        if val is None:
-            return None
-        return bool(val)
-
-    @property
-    def extra_state_attributes(self):
-        slot = self.coordinator.current_slot()
-        if slot is None:
-            return {}
-        return {
-            "slot_start": slot.start.isoformat(),
-            "slot_end": slot.end.isoformat(),
-            "dt_plus": slot.dt_plus,
+    def __init__(self, coordinator, tariff_name):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_{tariff_name}_offpeak"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, tariff_name)},
+            "name": f"Groupe E – {tariff_name.upper()}",
+            "manufacturer": "Groupe E",
+            "model": tariff_name.upper(),
+            "entry_type": "service",
         }
 
-    async def async_added_to_hass(self) -> None:
-        self.coordinator.async_add_listener(self.async_write_ha_state)
-
-    async def async_will_remove_from_hass(self) -> None:
-        self.coordinator.async_remove_listener(self.async_write_ha_state)
+    @property
+    def is_on(self) -> bool | None:
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("tariff_period")

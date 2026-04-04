@@ -1,13 +1,12 @@
 {
-  "domain": "groupee_vario",
-  "name": "WattKeeper Groupe E Tariffs",
-  "version": "0.3.8",
+  "domain": "groupe_e",
+  "name": "Groupe E Tariffs v2",
+  "version": "2.0.0",
+  "codeowners": ["@crapitouille"],
+  "config_flow": true,
   "documentation": "https://github.com/crapitouille/ha-groupee-tariffs",
   "issue_tracker": "https://github.com/crapitouille/ha-groupee-tariffs/issues",
-  "codeowners": [
-    "@crapitouille"
-  ],
-  "config_flow": true,
+  "integration_type": "service",
   "iot_class": "cloud_polling",
   "requirements": []
 }

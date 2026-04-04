@@ -1,430 +1,275 @@
+"""DataUpdateCoordinator for Groupe E Tariffs v2."""
 from __future__ import annotations
 
-import asyncio
 import logging
-import math
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta, time
-from typing import Any, Optional
-from zoneinfo import ZoneInfo
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
+import aiohttp
+
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
-    API_URL,
-    CONF_REFRESH_TIME,
-    DEFAULT_REFRESH_TIME,
-    CONF_CHEAP_WINDOW_HOURS,
-    DEFAULT_CHEAP_WINDOW_HOURS,
-    CONF_CHEAP_WINDOW_COUNT,
-    DEFAULT_CHEAP_WINDOW_COUNT,
+    API_ENDPOINT,
+    BASE_URL,
+    DEFAULT_DAILY_UPDATE_HOUR,
+    DEFAULT_WINDOW_COUNT,
+    DEFAULT_WINDOW_DURATION_HOURS,
     DOMAIN,
-    USER_AGENT,
+    PERIOD_OFFPEAK,
+    PERIOD_PEAK,
+    TARIFF_DOUBLE,
+    TARIFF_VARIO,
+    UPDATE_INTERVAL_MINUTES,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-@dataclass(frozen=True)
-class TariffSlot:
-    start: datetime
-    end: datetime
-    vario_plus: float
-    dt_plus: float
-    unit: str | None
 
-class GroupeEVarioCoordinator(DataUpdateCoordinator[list[TariffSlot]]):
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+def _parse_slots(prices: list[dict]) -> list[dict]:
+    """Parse and sort price slots from API response."""
+    slots = []
+    for p in prices:
+        try:
+            start = datetime.fromisoformat(p["start_timestamp"])
+            end = datetime.fromisoformat(p["end_timestamp"])
+            integrated = p["integrated"][0].get("value") if p.get("integrated") else None
+            grid = p["grid"][0].get("value") if p.get("grid") else None
+            slots.append({"start": start, "end": end, "integrated": integrated, "grid": grid})
+        except (KeyError, IndexError, ValueError) as err:
+            _LOGGER.warning("Slot skipped: %s", err)
+    slots.sort(key=lambda x: x["start"])
+    return slots
+
+
+def _parse_publication(ts: str | None) -> datetime | None:
+    """Parse publication timestamp, handling 7-decimal microseconds."""
+    if not ts:
+        return None
+    try:
+        ts_fixed = re.sub(r'(\.\d{6})\d+', r'\1', ts)
+        return datetime.fromisoformat(ts_fixed)
+    except (ValueError, TypeError):
+        return None
+
+
+def _determine_period(tariff_name: str, slot: dict | None, all_integrated: list[float]) -> bool | None:
+    """Return True (OffPeak) or False (Peak) for DOUBLE tariff."""
+    if tariff_name != TARIFF_DOUBLE or not slot or slot.get("integrated") is None:
+        return None
+    unique = sorted(set(round(v, 4) for v in all_integrated))
+    if len(unique) >= 2:
+        threshold = (unique[0] + unique[-1]) / 2
+        return PERIOD_OFFPEAK if slot["integrated"] <= threshold else PERIOD_PEAK
+    return PERIOD_PEAK
+
+
+def _compute_cheap_windows(
+    slots: list[dict],
+    window_count: int,
+    window_duration_hours: int,
+) -> list[dict]:
+    """
+    Find `window_count` non-overlapping windows of `window_duration_hours` hours
+    with the lowest average integrated price.
+
+    Algorithm: greedy — find the globally best window, mark its slots as used, repeat.
+    Returns a sorted list of windows (by start time).
+    """
+    slots_per_window = window_duration_hours * 4  # 15-min slots
+    n = len(slots)
+    if n < slots_per_window:
+        return []
+
+    # Only consider slots with valid prices
+    prices = [s["integrated"] if s.get("integrated") is not None else float("inf") for s in slots]
+    used = [False] * n
+    windows = []
+
+    for _ in range(window_count):
+        best_avg = float("inf")
+        best_start = -1
+
+        for i in range(n - slots_per_window + 1):
+            # Skip if any slot in this window is already used
+            if any(used[i:i + slots_per_window]):
+                continue
+            avg = sum(prices[i:i + slots_per_window]) / slots_per_window
+            if avg < best_avg:
+                best_avg = avg
+                best_start = i
+
+        if best_start == -1:
+            break  # No more non-overlapping windows available
+
+        # Mark slots as used
+        for i in range(best_start, best_start + slots_per_window):
+            used[i] = True
+
+        window_slots = slots[best_start:best_start + slots_per_window]
+        windows.append({
+            "start": window_slots[0]["start"],
+            "end": window_slots[-1]["end"],
+            "avg_price_chf_kwh": round(best_avg, 5),
+            "min_price_chf_kwh": round(min(prices[best_start:best_start + slots_per_window]), 5),
+            "max_price_chf_kwh": round(max(prices[best_start:best_start + slots_per_window]), 5),
+            "duration_hours": window_duration_hours,
+            "slot_count": slots_per_window,
+        })
+
+    # Sort by start time
+    windows.sort(key=lambda w: w["start"])
+    return windows
+
+
+class GroupeETariffCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Fetch today + tomorrow tariff data, refresh every 15 min + daily at configured hour."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        tariff_name: str,
+        daily_update_hour: int = DEFAULT_DAILY_UPDATE_HOUR,
+        window_count: int = DEFAULT_WINDOW_COUNT,
+        window_duration_hours: int = DEFAULT_WINDOW_DURATION_HOURS,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
-            name=f"{DOMAIN}_{entry.entry_id}",
-            update_interval=None,  # we drive refresh manually
+            name=f"{DOMAIN}_{tariff_name}",
+            update_interval=timedelta(minutes=UPDATE_INTERVAL_MINUTES),
         )
-        self.entry = entry
-        self._tz = ZoneInfo(hass.config.time_zone or "UTC")
-        self._session = async_get_clientsession(hass)
+        self._tariff_name = tariff_name
+        self._daily_update_hour = daily_update_hour
+        self._window_count = window_count
+        self._window_duration_hours = window_duration_hours
+        self._unsub_daily: Any = None
 
-        self._last_valid_data: list[TariffSlot] | None = None
-        self._last_day_seen: date | None = None
-        self._last_refresh_attempt: datetime | None = None
-        self._refresh_lock = asyncio.Lock()
-
-        self._unsub_tick = None
-        self._unsub_daily = None
-
-        # Periodic tick: updates entities (without hitting API) and handles midnight rollover.
-        self._unsub_tick = async_track_time_interval(hass, self._async_time_tick, timedelta(minutes=1))
-
-        # Daily refresh at configured time (default 18:00), aligned with API publishing.
-        self._setup_daily_refresh()
-
-        # Service for manual refresh
-        hass.services.async_register(DOMAIN, "refresh_now", self._handle_refresh_service)
-
-    def _setup_daily_refresh(self) -> None:
-        # Unsubscribe previous if options changed
-        if self._unsub_daily is not None:
-            self._unsub_daily()
-            self._unsub_daily = None
-
-        hhmm = self.entry.options.get(CONF_REFRESH_TIME, DEFAULT_REFRESH_TIME)
-        hour, minute = 18, 0
-        try:
-            parts = str(hhmm).split(":")
-            hour = int(parts[0])
-            minute = int(parts[1]) if len(parts) > 1 else 0
-            hour = max(0, min(23, hour))
-            minute = max(0, min(59, minute))
-        except Exception:
-            _LOGGER.warning("Invalid refresh_time option '%s', using %s", hhmm, DEFAULT_REFRESH_TIME)
-
+    def start_daily_refresh(self) -> None:
         self._unsub_daily = async_track_time_change(
-            self.hass, self._async_daily_refresh, hour=hour, minute=minute, second=0
+            self.hass,
+            self._handle_daily_refresh,
+            hour=self._daily_update_hour,
+            minute=0,
+            second=0,
         )
+        _LOGGER.debug("Groupe E [%s]: daily refresh scheduled at %02d:00", self._tariff_name, self._daily_update_hour)
 
-    async def async_shutdown(self) -> None:
-        if self._unsub_tick is not None:
-            self._unsub_tick()
-            self._unsub_tick = None
-        if self._unsub_daily is not None:
+    def stop_daily_refresh(self) -> None:
+        if self._unsub_daily:
             self._unsub_daily()
             self._unsub_daily = None
 
-        # Best effort: unregister service (may be used by multiple entries in future)
-        try:
-            self.hass.services.async_remove(DOMAIN, "refresh_now")
-        except Exception:
-            pass
-
     @callback
-    async def _async_daily_refresh(self, *args: Any, **kwargs: Any) -> None:
-        _LOGGER.debug("Daily refresh trigger fired")
-        await self._safe_request_refresh(reason="daily_schedule")
+    def _handle_daily_refresh(self, _now: datetime) -> None:
+        self.hass.async_create_task(self.async_refresh())
 
-    async def _handle_refresh_service(self, call) -> None:
-        # For future multi-entry support, we could accept entry_id and filter.
-        await self._safe_request_refresh(reason="service")
-
-    @callback
-    async def _async_time_tick(self, now: datetime) -> None:
-        # 1) Detect midnight rollover and refresh.
-        local_now = now.astimezone(self._tz)
-        today = local_now.date()
-
-        if self._last_day_seen is None:
-            self._last_day_seen = today
-        elif today != self._last_day_seen:
-            _LOGGER.info("Day rollover detected (%s -> %s). Forcing API refresh.", self._last_day_seen, today)
-            self._last_day_seen = today
-            # Fire and forget; do not block tick loop
-            self.hass.async_create_task(self._safe_request_refresh(reason="midnight_rollover"))
-
-        # 2) If we cannot resolve a current slot, attempt an API refresh (cooldown).
-        if self._last_valid_data:
-            if self.current_slot(local_now) is None:
-                # Cooldown to avoid hammering API if it's temporarily missing data
-                if self._should_attempt_refresh(local_now):
-                    _LOGGER.warning("No current slot found for %s. Attempting API refresh.", local_now.isoformat())
-                    self.hass.async_create_task(self._safe_request_refresh(reason="no_current_slot"))
-
-        # 3) Update listeners so entities recalculate based on current time.
-        try:
-            self.async_update_listeners()
-        except Exception:
-            _LOGGER.exception("Failed to update listeners on tick")
-
-    def _should_attempt_refresh(self, now: datetime) -> bool:
-        if self._last_refresh_attempt is None:
-            return True
-        return (now - self._last_refresh_attempt) >= timedelta(minutes=10)
-
-    async def _safe_request_refresh(self, reason: str) -> None:
-        # Ensure only one refresh at a time.
-        async with self._refresh_lock:
-            self._last_refresh_attempt = datetime.now(tz=self._tz)
-            try:
-                await self.async_request_refresh()
-                _LOGGER.debug("Refresh completed (reason=%s)", reason)
-            except Exception:
-                _LOGGER.exception("Refresh failed (reason=%s); keeping last known data", reason)
-                # Keep coordinator.data as last valid if possible
-                if self._last_valid_data is not None:
-                    self.async_set_updated_data(self._last_valid_data)
-
-    async def _async_update_data(self) -> list[TariffSlot]:
-        # Fetch tariffs for today + tomorrow (2 days) with an exclusive end boundary.
-        try:
-            slots = await self._fetch_slots_window()
-            if not slots:
-                raise UpdateFailed("Empty response from Groupe E tariffs API")
-            self._last_valid_data = slots
-            return slots
-        except Exception as err:
-            # Do not force entities to unknown: keep last valid data if present.
-            if self._last_valid_data is not None:
-                _LOGGER.error("Update failed: %s (keeping last valid data)", err)
-                return self._last_valid_data
-            raise UpdateFailed(str(err)) from err
-
-    async def _fetch_slots_window(self) -> list[TariffSlot]:
-        now = datetime.now(tz=self._tz)
-        start_local = datetime.combine(now.date(), time(0, 0), tzinfo=self._tz)
-        end_local = start_local + timedelta(days=2)  # exclusive end
-
+    async def _fetch_day(self, session: aiohttp.ClientSession, day: datetime) -> tuple[list[dict], str | None]:
+        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day.replace(hour=23, minute=59, second=59, microsecond=0)
         params = {
-            "start_timestamp": start_local.isoformat(),
-            "end_timestamp": end_local.isoformat(),
+            "tariff_name": self._tariff_name,
+            "start_timestamp": day_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_timestamp": day_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": "application/json",
-        }
-
-        _LOGGER.debug("Fetching tariffs window start=%s end=%s", params["start_timestamp"], params["end_timestamp"])
-
-        async with self._session.get(API_URL, params=params, headers=headers, timeout=30) as resp:
+        async with session.get(
+            f"{BASE_URL}{API_ENDPOINT}",
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status == 400:
+                body = await resp.json()
+                raise UpdateFailed(f"Bad request (400): {body.get('error', 'unknown')}")
             if resp.status != 200:
-                text = await resp.text()
-                raise UpdateFailed(f"HTTP {resp.status}: {text[:300]}")
+                raise UpdateFailed(f"API HTTP error {resp.status}")
             raw = await resp.json()
+        return _parse_slots(raw.get("prices", [])), raw.get("publication_timestamp")
 
-        if not isinstance(raw, list):
-            raise UpdateFailed(f"Unexpected API payload type: {type(raw)}")
+    async def _async_update_data(self) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        tomorrow = now + timedelta(days=1)
 
-        slots: list[TariffSlot] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            try:
-                start = datetime.fromisoformat(item["start_timestamp"]).astimezone(self._tz)
-                end = datetime.fromisoformat(item["end_timestamp"]).astimezone(self._tz)
-                vario_plus_raw = item.get("vario_plus")
-                dt_plus_raw = item.get("dt_plus")
-                vario_plus = float(vario_plus_raw)
-                dt_plus = float(dt_plus_raw)
-                # Guard against NaN/Inf in API payload (would break cheapest-window selection)
-                if not math.isfinite(vario_plus):
-                    _LOGGER.warning("Non-finite vario_plus=%s at %s; using large sentinel", vario_plus_raw, item.get("start_timestamp"))
-                    vario_plus = 1e9
-                if not math.isfinite(dt_plus):
-                    _LOGGER.warning("Non-finite dt_plus=%s at %s; using large sentinel", dt_plus_raw, item.get("start_timestamp"))
-                    dt_plus = 1e9
-                unit = item.get("unit")
-                slots.append(TariffSlot(start=start, end=end, vario_plus=vario_plus, dt_plus=dt_plus, unit=unit))
-            except Exception:
-                # Skip malformed row but keep going
-                continue
-
-        # Sort to be safe
-        slots.sort(key=lambda s: s.start)
-        _LOGGER.debug("Fetched %d tariff slots", len(slots))
-        return slots
-
-    def current_slot(self, now_local: Optional[datetime] = None) -> TariffSlot | None:
-        if not self._last_valid_data:
-            return None
-        if now_local is None:
-            now_local = datetime.now(tz=self._tz)
-        # Inclusive start, exclusive end
-        for slot in self._last_valid_data:
-            if slot.start <= now_local < slot.end:
-                return slot
-        return None
-
-    def dt_off_peak(self, now_local: Optional[datetime] = None) -> bool | None:
-        slot = self.current_slot(now_local)
-        if slot is None or not self._last_valid_data:
-            return None
-
-        day = slot.start.date()
-        # Determine lowest dt_plus for that civil day (local time)
-        vals = [s.dt_plus for s in self._last_valid_data if s.start.date() == day]
-        if not vals:
-            return None
-        low = min(vals)
-        return slot.dt_plus == low
-
-    def cheap_window_hours(self) -> int:
-        """Configured cheapest-window duration in hours (1..4)."""
-        raw = self.entry.options.get(CONF_CHEAP_WINDOW_HOURS, DEFAULT_CHEAP_WINDOW_HOURS)
         try:
-            val = int(raw)
-        except Exception:
-            val = int(DEFAULT_CHEAP_WINDOW_HOURS)
-        return max(1, min(4, val))
+            async with aiohttp.ClientSession() as session:
+                today_slots, publication = await self._fetch_day(session, now)
+                try:
+                    tomorrow_slots, tomorrow_publication = await self._fetch_day(session, tomorrow)
+                except UpdateFailed:
+                    tomorrow_slots = []
+                    tomorrow_publication = None
+        except aiohttp.ClientError as err:
+            raise UpdateFailed(f"Connection error: {err}") from err
 
-    def cheap_window_count(self) -> int:
-        """Configured number of non-overlapping cheapest windows per day (1..4)."""
-        raw = self.entry.options.get(CONF_CHEAP_WINDOW_COUNT, DEFAULT_CHEAP_WINDOW_COUNT)
-        try:
-            val = int(raw)
-        except Exception:
-            val = int(DEFAULT_CHEAP_WINDOW_COUNT)
-        return max(1, min(4, val))
+        if not today_slots:
+            raise UpdateFailed("No prices returned by the API for today")
 
+        # Current and next slot
+        current_slot = None
+        next_slot = None
+        for i, slot in enumerate(today_slots):
+            s = slot["start"] if slot["start"].tzinfo else slot["start"].replace(tzinfo=timezone.utc)
+            e = slot["end"] if slot["end"].tzinfo else slot["end"].replace(tzinfo=timezone.utc)
+            if s <= now < e:
+                current_slot = slot
+                if i + 1 < len(today_slots):
+                    next_slot = today_slots[i + 1]
+                elif tomorrow_slots:
+                    next_slot = tomorrow_slots[0]
+                break
 
-    def day_slots(self, day: date) -> list[TariffSlot]:
-        if not self._last_valid_data:
-            return []
-        return [s for s in self._last_valid_data if s.start.date() == day]
+        # Min / max
+        today_integrated = [s["integrated"] for s in today_slots if s["integrated"] is not None]
+        tomorrow_integrated = [s["integrated"] for s in tomorrow_slots if s["integrated"] is not None]
 
-    def dt_offpeak_blocks(self, day: date) -> list[tuple[datetime, datetime]]:
-        """Return merged off-peak blocks for the given civil day."""
-        slots = self.day_slots(day)
-        if not slots:
-            return []
-        low = min(s.dt_plus for s in slots)
-        off = [s for s in slots if s.dt_plus == low]
-        if not off:
-            return []
-        off.sort(key=lambda s: s.start)
-        blocks: list[tuple[datetime, datetime]] = []
-        cur_start = off[0].start
-        cur_end = off[0].end
-        for s in off[1:]:
-            if s.start == cur_end:
-                cur_end = s.end
-            else:
-                blocks.append((cur_start, cur_end))
-                cur_start, cur_end = s.start, s.end
-        blocks.append((cur_start, cur_end))
-        return blocks
+        # HP/HC period (DOUBLE)
+        tariff_period = _determine_period(self._tariff_name, current_slot, today_integrated)
 
-    def cheapest_vario_window(self, day: date, hours: int | None = None) -> tuple[datetime, datetime] | None:
-        """Return (start,end) of the cheapest contiguous Vario window for a day."""
-        if hours is None:
-            hours = self.cheap_window_hours()
-        hours = max(1, min(24, int(hours)))
-        needed = hours * 4  # 15-min slots
+        # Serialise slots for attributes
+        def serialise(slots):
+            return [
+                {
+                    "start": s["start"].isoformat(),
+                    "end": s["end"].isoformat(),
+                    "integrated_chf_kwh": round(s["integrated"], 5) if s["integrated"] is not None else None,
+                }
+                for s in slots
+            ]
 
-        slots = self.day_slots(day)
-        if len(slots) < needed:
-            return None
-        slots.sort(key=lambda s: s.start)
+        # Cheap windows (VARIO only) — computed independently for today and tomorrow
+        cheap_windows = []
+        if self._tariff_name == TARIFF_VARIO:
+            today_windows = _compute_cheap_windows(
+                today_slots,
+                self._window_count,
+                self._window_duration_hours,
+            )
+            tomorrow_windows = _compute_cheap_windows(
+                tomorrow_slots,
+                self._window_count,
+                self._window_duration_hours,
+            ) if tomorrow_slots else []
+            # Merge sorted by start time: today first, then tomorrow
+            cheap_windows = today_windows + tomorrow_windows
 
-        best_sum: float | None = None
-        best_start: datetime | None = None
-        # Sliding window with contiguity check
-        for i in range(0, len(slots) - needed + 1):
-            window = slots[i : i + needed]
-            ok = True
-            for a, b in zip(window, window[1:]):
-                if b.start != a.end:
-                    ok = False
-                    break
-            if not ok:
-                continue
-            ssum = sum(x.vario_plus for x in window)
-            if best_sum is None or ssum < best_sum:
-                best_sum = ssum
-                best_start = window[0].start
-        if best_start is None:
-            return None
-        return (best_start, best_start + timedelta(minutes=15 * needed))
-
-    def cheapest_vario_windows(
-        self, day: date, hours: int | None = None, count: int | None = None
-    ) -> list[tuple[datetime, datetime]]:
-        """Return up to N non-overlapping cheapest contiguous Vario windows for a day.
-
-        - Windows are aligned to 15-minute slots and must be fully contiguous.
-        - Windows do not overlap.
-        - Selection minimizes total cost (sum of vario_plus across selected windows).
-        - Deterministic tie-break: earlier windows are preferred when costs are equal.
-        """
-        if hours is None:
-            hours = self.cheap_window_hours()
-        if count is None:
-            count = self.cheap_window_count()
-
-        hours = max(1, min(24, int(hours)))
-        count = max(1, min(4, int(count)))
-
-        needed = hours * 4  # 15-min slots
-        slots = self.day_slots(day)
-        if len(slots) < needed:
-            return []
-        slots.sort(key=lambda s: s.start)
-
-        # Build contiguous window candidates (start, end, cost)
-        candidates: list[tuple[datetime, datetime, float]] = []
-        for i in range(0, len(slots) - needed + 1):
-            window = slots[i : i + needed]
-            # Ensure strict contiguity
-            ok = True
-            for a, b in zip(window, window[1:]):
-                if b.start != a.end:
-                    ok = False
-                    break
-            if not ok:
-                continue
-            start_dt = window[0].start
-            end_dt = window[-1].end
-            cost = sum(x.vario_plus for x in window)
-            candidates.append((start_dt, end_dt, cost))
-
-        if not candidates:
-            return []
-
-        candidates.sort(key=lambda t: (t[0], t[1]))
-        starts = [c[0] for c in candidates]
-        ends = [c[1] for c in candidates]
-        costs = [c[2] for c in candidates]
-
-        from bisect import bisect_left
-        from functools import lru_cache
-
-        # next index for non-overlap: first candidate with start >= current end
-        next_idx: list[int] = [bisect_left(starts, e) for e in ends]
-
-        @lru_cache(maxsize=None)
-        def solve(i: int, k: int) -> tuple[float, tuple[int, ...]]:
-            # We want to pick exactly k windows when possible.
-            # If we run out of candidates while still needing picks, return +inf.
-            if k == 0:
-                return (0.0, ())
-            if i >= len(candidates):
-                return (float('inf'), ())
-            # Option 1: skip i
-            best_cost, best_pick = solve(i + 1, k)
-
-            # Option 2: take i
-            take_cost_next, take_pick_next = solve(next_idx[i], k - 1)
-            take_cost = costs[i] + take_cost_next
-            take_pick = (i,) + take_pick_next
-
-            # Choose better: lower cost, then lexicographically smaller indices (earlier)
-            if (take_cost, take_pick) < (best_cost, best_pick):
-                return (take_cost, take_pick)
-            return (best_cost, best_pick)
-
-        _total_cost, picked = solve(0, count)
-        if not math.isfinite(_total_cost):
-            return []
-        windows = [(candidates[i][0], candidates[i][1]) for i in picked]
-        windows.sort(key=lambda w: w[0])
-        return windows
-
-    def next_offpeak_start(self, now: datetime | None = None) -> datetime | None:
-        """Return the next DT off-peak block start strictly after 'now' (local time)."""
-        if now is None:
-            now = datetime.now(tz=self._tz)
-        local_now = now.astimezone(self._tz)
-
-        if not self._last_valid_data:
-            return None
-
-        # Consider today + tomorrow only (that's what API provides)
-        days = sorted({s.start.date() for s in self._last_valid_data})
-        for d in days:
-            for start, end in self.dt_offpeak_blocks(d):
-                if start > local_now:
-                    return start
-        return None
-
-    # (end)
+        return {
+            "current_slot": current_slot,
+            "next_slot": next_slot,
+            "min_price_today": min(today_integrated) if today_integrated else None,
+            "max_price_today": max(today_integrated) if today_integrated else None,
+            "min_price_tomorrow": min(tomorrow_integrated) if tomorrow_integrated else None,
+            "max_price_tomorrow": max(tomorrow_integrated) if tomorrow_integrated else None,
+            "tariff_period": tariff_period,
+            "publication_timestamp": _parse_publication(publication),
+            "last_refresh": now,
+            "tomorrow_publication_timestamp": _parse_publication(tomorrow_publication),
+            "schedule_today": serialise(today_slots),
+            "schedule_tomorrow": serialise(tomorrow_slots),
+            "tariff_name": self._tariff_name,
+            "tomorrow_available": len(tomorrow_slots) > 0,
+            "cheap_windows": cheap_windows,
+            "window_count": self._window_count,
+            "window_duration_hours": self._window_duration_hours,
+        }

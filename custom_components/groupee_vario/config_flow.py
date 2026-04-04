@@ -1,59 +1,142 @@
+"""Config flow for Groupe E Tariffs v2 integration."""
 from __future__ import annotations
+
+import logging
+from typing import Any
 
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import callback
-
-from .const import (
-    DOMAIN,
-    CONF_CHEAP_WINDOW_HOURS,
-    DEFAULT_CHEAP_WINDOW_HOURS,
-    CONF_CHEAP_WINDOW_COUNT,
-    DEFAULT_CHEAP_WINDOW_COUNT,
+from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
 )
 
-class GroupeEVarioConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+from .const import (
+    CONF_DAILY_UPDATE_HOUR,
+    CONF_TARIFF_NAME,
+    CONF_WINDOW_COUNT,
+    CONF_WINDOW_DURATION_HOURS,
+    DEFAULT_DAILY_UPDATE_HOUR,
+    DEFAULT_WINDOW_COUNT,
+    DEFAULT_WINDOW_DURATION_HOURS,
+    DOMAIN,
+    TARIFF_LABELS,
+    TARIFF_VARIO,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+HOUR_SELECTOR = NumberSelector(
+    NumberSelectorConfig(min=0, max=23, step=1, mode=NumberSelectorMode.BOX, unit_of_measurement="h")
+)
+WINDOW_COUNT_SELECTOR = NumberSelector(
+    NumberSelectorConfig(min=1, max=4, step=1, mode=NumberSelectorMode.BOX, unit_of_measurement="windows")
+)
+WINDOW_DURATION_SELECTOR = NumberSelector(
+    NumberSelectorConfig(min=1, max=4, step=1, mode=NumberSelectorMode.BOX, unit_of_measurement="h")
+)
+
+
+class GroupeEConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
-    async def async_step_user(self, user_input=None):
-        # Single instance by default; change to allow multi-instance later if needed.
-        await self.async_set_unique_id(DOMAIN)
-        self._abort_if_unique_id_configured()
+    def __init__(self):
+        self._data: dict[str, Any] = {}
 
-        if user_input is None:
-            return self.async_show_form(step_id="user", data_schema=vol.Schema({}))
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Step 1: tariff selection + daily update hour."""
+        if user_input is not None:
+            self._data.update({
+                CONF_TARIFF_NAME: user_input[CONF_TARIFF_NAME],
+                CONF_DAILY_UPDATE_HOUR: int(user_input[CONF_DAILY_UPDATE_HOUR]),
+            })
+            if user_input[CONF_TARIFF_NAME] == TARIFF_VARIO:
+                return await self.async_step_vario_windows()
+            # DOUBLE: no extra options, create entry directly
+            tariff_name = self._data[CONF_TARIFF_NAME]
+            await self.async_set_unique_id(f"{DOMAIN}_{tariff_name}")
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(
+                title=f"Groupe E Tariffs v2 – {TARIFF_LABELS.get(tariff_name, tariff_name)}",
+                data=self._data,
+            )
 
-        return self.async_create_entry(title="Groupe E Tariffs", data={})
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema({
+                vol.Required(CONF_TARIFF_NAME): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[SelectOptionDict(value=k, label=v) for k, v in TARIFF_LABELS.items()],
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Required(CONF_DAILY_UPDATE_HOUR, default=DEFAULT_DAILY_UPDATE_HOUR): HOUR_SELECTOR,
+            }),
+        )
+
+    async def async_step_vario_windows(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Step 2 (VARIO only): configure cheap window settings."""
+        if user_input is not None:
+            self._data.update({
+                CONF_WINDOW_COUNT: int(user_input[CONF_WINDOW_COUNT]),
+                CONF_WINDOW_DURATION_HOURS: int(user_input[CONF_WINDOW_DURATION_HOURS]),
+            })
+            tariff_name = self._data[CONF_TARIFF_NAME]
+            await self.async_set_unique_id(f"{DOMAIN}_{tariff_name}")
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(
+                title=f"Groupe E Tariffs v2 – {TARIFF_LABELS.get(tariff_name, tariff_name)}",
+                data=self._data,
+            )
+
+        return self.async_show_form(
+            step_id="vario_windows",
+            data_schema=vol.Schema({
+                vol.Required(CONF_WINDOW_COUNT, default=DEFAULT_WINDOW_COUNT): WINDOW_COUNT_SELECTOR,
+                vol.Required(CONF_WINDOW_DURATION_HOURS, default=DEFAULT_WINDOW_DURATION_HOURS): WINDOW_DURATION_SELECTOR,
+            }),
+            description_placeholders={
+                "info": "Define the cheapest price windows to optimise your consumption."
+            },
+        )
 
     @staticmethod
-    @callback
     def async_get_options_flow(config_entry):
-        return GroupeEVarioOptionsFlowHandler(config_entry)
+        return GroupeEOptionsFlow(config_entry)
 
-class GroupeEVarioOptionsFlowHandler(config_entries.OptionsFlow):
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+
+class GroupeEOptionsFlow(config_entries.OptionsFlow):
+    def __init__(self, config_entry):
         self._config_entry = config_entry
 
-    async def async_step_init(self, user_input=None):
-        # Keep options minimal and fully serializable (no custom validators).
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        is_vario = self._config_entry.data.get(CONF_TARIFF_NAME) == TARIFF_VARIO
+
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            data = {CONF_DAILY_UPDATE_HOUR: int(user_input[CONF_DAILY_UPDATE_HOUR])}
+            if is_vario:
+                data[CONF_WINDOW_COUNT] = int(user_input[CONF_WINDOW_COUNT])
+                data[CONF_WINDOW_DURATION_HOURS] = int(user_input[CONF_WINDOW_DURATION_HOURS])
+            return self.async_create_entry(title="", data=data)
 
-        # We keep refresh_time as a simple string "HH:MM" to avoid serializer issues.
-        current = self._config_entry.options.get("refresh_time", "18:00")
-        current_hours = str(
-            self._config_entry.options.get(CONF_CHEAP_WINDOW_HOURS, DEFAULT_CHEAP_WINDOW_HOURS)
-        )
-        current_count = str(
-            self._config_entry.options.get(CONF_CHEAP_WINDOW_COUNT, DEFAULT_CHEAP_WINDOW_COUNT)
-        )
+        def _get(key, default):
+            return self._config_entry.options.get(key, self._config_entry.data.get(key, default))
 
-        schema = vol.Schema(
-            {
-                vol.Optional("refresh_time", default=current): str,
-                vol.Optional(CONF_CHEAP_WINDOW_HOURS, default=current_hours): vol.In(["1", "2", "3", "4"]),
-                vol.Optional(CONF_CHEAP_WINDOW_COUNT, default=current_count): vol.In(["1", "2", "3", "4"]),
-            }
+        schema_dict = {
+            vol.Required(CONF_DAILY_UPDATE_HOUR, default=_get(CONF_DAILY_UPDATE_HOUR, DEFAULT_DAILY_UPDATE_HOUR)): HOUR_SELECTOR,
+        }
+        if is_vario:
+            schema_dict[vol.Required(CONF_WINDOW_COUNT, default=_get(CONF_WINDOW_COUNT, DEFAULT_WINDOW_COUNT))] = WINDOW_COUNT_SELECTOR
+            schema_dict[vol.Required(CONF_WINDOW_DURATION_HOURS, default=_get(CONF_WINDOW_DURATION_HOURS, DEFAULT_WINDOW_DURATION_HOURS))] = WINDOW_DURATION_SELECTOR
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(schema_dict),
         )
-        return self.async_show_form(step_id="init", data_schema=schema)

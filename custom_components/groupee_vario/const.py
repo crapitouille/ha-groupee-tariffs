@@ -1,18 +1,38 @@
-from __future__ import annotations
+"""Constants for the Groupe E Tariffs v2 integration."""
 
-DOMAIN = "groupee_vario"
-NAME = "Groupe E Tariffs"
+DOMAIN = "groupe_e"
 
-CONF_REFRESH_TIME = "refresh_time"  # "HH:MM"
-DEFAULT_REFRESH_TIME = "18:00"
+CONF_TARIFF_NAME = "tariff_name"
+CONF_DAILY_UPDATE_HOUR = "daily_update_hour"
+CONF_WINDOW_COUNT = "window_count"
+CONF_WINDOW_DURATION_HOURS = "window_duration_hours"
 
-# Duration for the "cheapest" contiguous Vario window, in hours.
-CONF_CHEAP_WINDOW_HOURS = "cheap_window_hours"  # 1..4 (hours)
-DEFAULT_CHEAP_WINDOW_HOURS = 1
+TARIFF_VARIO = "vario"
+TARIFF_DOUBLE = "double"
+TARIFFS = [TARIFF_VARIO, TARIFF_DOUBLE]
 
-# Number of non-overlapping cheapest windows per day.
-CONF_CHEAP_WINDOW_COUNT = "cheap_window_count"  # 1..4
-DEFAULT_CHEAP_WINDOW_COUNT = 1
+TARIFF_LABELS = {
+    "vario": "VARIO (dynamic)",
+    "double": "DOUBLE (HP/HC)",
+}
 
-API_URL = "https://api.tariffs.groupe-e.ch/v1/tariffs"
-USER_AGENT = "homeassistant-groupee-vario/0.3.8"
+BASE_URL = "https://api.tariffs.groupe-e.ch"
+API_ENDPOINT = "/v2/tariffs"
+
+UPDATE_INTERVAL_MINUTES = 15
+DEFAULT_DAILY_UPDATE_HOUR = 18
+DEFAULT_WINDOW_COUNT = 1
+DEFAULT_WINDOW_DURATION_HOURS = 2
+
+# Sensor keys
+SENSOR_CURRENT_PRICE = "current_price"
+SENSOR_NEXT_PRICE = "next_price"
+SENSOR_MIN_PRICE_TODAY = "min_price_today"
+SENSOR_MAX_PRICE_TODAY = "max_price_today"
+SENSOR_PUBLICATION_TIME = "publication_timestamp"
+SENSOR_SCHEDULE = "price_schedule"
+SENSOR_LAST_REFRESH = "last_refresh"
+SENSOR_CHEAP_WINDOW = "cheap_window"
+
+PERIOD_OFFPEAK = True
+PERIOD_PEAK = False
