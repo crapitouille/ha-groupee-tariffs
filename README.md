@@ -46,6 +46,10 @@ apex_config:
     title:
       text: CHF/kWh
     decimalsInFloat: 2
+  tooltip:
+    "y":
+      formatter: |
+        EVAL:function(val) { return val.toFixed(4) + ' CHF/kWh'; }
 series:
   - entity: sensor.groupe_e_vario_price_schedule
     name: Prix CHF/kWh
