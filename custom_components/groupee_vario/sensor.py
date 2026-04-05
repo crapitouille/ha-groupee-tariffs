@@ -32,6 +32,18 @@ from .coordinator import GroupeETariffCoordinator
 
 CURRENCY_UNIT = "CHF/kWh"
 
+DEVICE_INFO_CACHE: dict[str, dict] = {}
+
+
+def _device_info(tariff_name: str) -> dict:
+    return {
+        "identifiers": {(DOMAIN, tariff_name)},
+        "name": f"Groupe E Tariffs v2 – {tariff_name.upper()}",
+        "manufacturer": "Groupe E",
+        "model": tariff_name.upper(),
+        "entry_type": "service",
+    }
+
 
 @dataclass(frozen=True, kw_only=True)
 class GroupeESensorDescription(SensorEntityDescription):
@@ -83,18 +95,15 @@ def _extra_next(d):
     return {"start": s["start"].isoformat(), "end": s["end"].isoformat()}
 
 def _extra_schedule(d):
+    """
+    Compact format: prices = [[start_ISO16, price], ...]
+    192 slots × ~30 bytes ≈ 5.7 KB, well under HA's 16 KB limit.
+    Use in apexcharts: prices.map(p => [new Date(p[0]).getTime(), p[1]])
+    """
     today = d.get("schedule_today", [])
     tomorrow = d.get("schedule_tomorrow", [])
-    all_slots = today + tomorrow
-    prices = [
-        {
-            "start": s["start"],
-            "end": s["end"],
-            "price_chf_kwh": s.get("integrated_chf_kwh"),
-        }
-        for s in all_slots
-    ]
-    all_values = [p["price_chf_kwh"] for p in prices if p["price_chf_kwh"] is not None]
+    prices = today + tomorrow
+    all_values = [p[1] for p in prices if p[1] is not None]
     return {
         "slot_count": len(prices),
         "today_slots": len(today),
@@ -108,7 +117,7 @@ def _extra_schedule(d):
     }
 
 
-# ---------- base sensors ----------
+# ---------- sensor descriptions ----------
 
 COMMON_SENSORS: list[GroupeESensorDescription] = [
     GroupeESensorDescription(
@@ -183,7 +192,6 @@ async def async_setup_entry(
         for desc in COMMON_SENSORS
     ]
 
-    # Add cheap window sensors for VARIO
     if tariff_name == TARIFF_VARIO:
         window_count = coordinator.data.get("window_count", 1) if coordinator.data else 1
         for i in range(1, window_count + 1):
@@ -200,13 +208,7 @@ class GroupeESensorEntity(CoordinatorEntity[GroupeETariffCoordinator], SensorEnt
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{DOMAIN}_{tariff_name}_{description.key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, tariff_name)},
-            "name": f"Groupe E Tariffs v2 – {tariff_name.upper()}",
-            "manufacturer": "Groupe E",
-            "model": tariff_name.upper(),
-            "entry_type": "service",
-        }
+        self._attr_device_info = _device_info(tariff_name)
 
     @property
     def native_value(self) -> Any:
@@ -222,8 +224,6 @@ class GroupeESensorEntity(CoordinatorEntity[GroupeETariffCoordinator], SensorEnt
 
 
 class GroupeECheapWindowSensor(CoordinatorEntity[GroupeETariffCoordinator], SensorEntity):
-    """Sensor representing one of the N cheapest price windows."""
-
     _attr_has_entity_name = True
     _attr_icon = "mdi:cash-clock"
     _attr_native_unit_of_measurement = CURRENCY_UNIT
@@ -234,37 +234,62 @@ class GroupeECheapWindowSensor(CoordinatorEntity[GroupeETariffCoordinator], Sens
         self._window_index = window_index
         self._attr_name = f"Cheap Window {window_index}"
         self._attr_unique_id = f"{DOMAIN}_{tariff_name}_{SENSOR_CHEAP_WINDOW}_{window_index}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, tariff_name)},
-            "name": f"Groupe E Tariffs v2 – {tariff_name.upper()}",
-            "manufacturer": "Groupe E",
-            "model": tariff_name.upper(),
-            "entry_type": "service",
-        }
+        self._attr_device_info = _device_info(tariff_name)
+
+    def _get_window(self) -> dict | None:
+        windows = (self.coordinator.data or {}).get("cheap_windows", [])
+        # Find windows for today only (first N windows belong to today)
+        today_windows = [w for w in windows if self._is_today(w["start"])]
+        idx = self._window_index - 1
+        return today_windows[idx] if idx < len(today_windows) else None
+
+    def _is_today(self, dt) -> bool:
+        from datetime import date
+        if isinstance(dt, str):
+            from datetime import datetime as _dt
+            dt = _dt.fromisoformat(dt)
+        now = __import__("datetime").datetime.now(dt.tzinfo or __import__("datetime").timezone.utc)
+        return dt.date() == now.date()
 
     @property
     def native_value(self) -> float | None:
-        """State = average price of the window."""
-        windows = (self.coordinator.data or {}).get("cheap_windows", [])
-        idx = self._window_index - 1
-        if idx < len(windows):
-            return windows[idx].get("avg_price_chf_kwh")
-        return None
+        w = self._get_window()
+        return w.get("avg_price_chf_kwh") if w else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         windows = (self.coordinator.data or {}).get("cheap_windows", [])
+        # All windows (today + tomorrow), filtered by index across each day
+        result = {}
+        from datetime import datetime as _dt, timezone as _tz
+        now = _dt.now(_tz.utc)
+
+        today_wins = [w for w in windows if (w["start"] if w["start"].tzinfo else w["start"].replace(tzinfo=_tz.utc)).date() == now.date()]
+        tomorrow_wins = [w for w in windows if (w["start"] if w["start"].tzinfo else w["start"].replace(tzinfo=_tz.utc)).date() == (now + __import__("datetime").timedelta(days=1)).date()]
+
         idx = self._window_index - 1
-        if idx >= len(windows):
-            return {"available": False}
-        w = windows[idx]
-        return {
-            "available": True,
-            "start": w["start"].isoformat() if hasattr(w["start"], "isoformat") else w["start"],
-            "end": w["end"].isoformat() if hasattr(w["end"], "isoformat") else w["end"],
-            "avg_price_chf_kwh": w.get("avg_price_chf_kwh"),
-            "min_price_chf_kwh": w.get("min_price_chf_kwh"),
-            "max_price_chf_kwh": w.get("max_price_chf_kwh"),
-            "duration_hours": w.get("duration_hours"),
-            "window_index": self._window_index,
-        }
+
+        if idx < len(today_wins):
+            w = today_wins[idx]
+            result["today"] = {
+                "start": w["start"].isoformat(),
+                "end": w["end"].isoformat(),
+                "avg_price_chf_kwh": w.get("avg_price_chf_kwh"),
+                "min_price_chf_kwh": w.get("min_price_chf_kwh"),
+                "max_price_chf_kwh": w.get("max_price_chf_kwh"),
+                "duration_hours": w.get("duration_hours"),
+            }
+
+        if idx < len(tomorrow_wins):
+            w = tomorrow_wins[idx]
+            result["tomorrow"] = {
+                "start": w["start"].isoformat(),
+                "end": w["end"].isoformat(),
+                "avg_price_chf_kwh": w.get("avg_price_chf_kwh"),
+                "min_price_chf_kwh": w.get("min_price_chf_kwh"),
+                "max_price_chf_kwh": w.get("max_price_chf_kwh"),
+                "duration_hours": w.get("duration_hours"),
+            }
+
+        result["tomorrow_available"] = idx < len(tomorrow_wins)
+        return result
