@@ -28,7 +28,7 @@ This new version is based on the Groupe E API v2
 ### The dynamic tariff looks like this image
 you will need to install apexcharts-card [apexcharts-card] from HACS, to view the data on your dashboard
 Simply add the apexcharts code
-'''
+```
 type: custom:apexcharts-card
 graph_span: 48h
 span:
@@ -56,7 +56,7 @@ series:
         new Date(p[0]).getTime(),
         p[1]
       ]);
-'''
+```
 
 
 ![dynamic Screen Shot][dynamic-screenshot]
