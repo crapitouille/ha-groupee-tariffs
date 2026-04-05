@@ -27,6 +27,38 @@ This new version is based on the Groupe E API v2
 
 ### The dynamic tariff looks like this image
 you will need to install apexcharts-card [apexcharts-card] from HACS, to view the data on your dashboard
+Simply add the apexcharts code
+'''
+type: custom:apexcharts-card
+graph_span: 48h
+span:
+  start: day
+header:
+  show: true
+  title: VARIO – Prix électricité
+apex_config:
+  xaxis:
+    type: datetime
+    labels:
+      datetimeFormatter:
+        hour: HH:mm
+  yaxis:
+    title:
+      text: CHF/kWh
+    decimalsInFloat: 2
+series:
+  - entity: sensor.groupe_e_vario_price_schedule
+    name: Prix CHF/kWh
+    curve: smooth
+    stroke_width: 2
+    data_generator: |
+      return entity.attributes.prices.map(p => [
+        new Date(p[0]).getTime(),
+        p[1]
+      ]);
+'''
+
+
 ![dynamic Screen Shot][dynamic-screenshot]
 
 ### The static tariff looks like this image
